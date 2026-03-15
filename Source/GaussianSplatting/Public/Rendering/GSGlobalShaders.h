@@ -17,8 +17,8 @@ class FGSSplatVS : public FGlobalShader
 	SHADER_USE_PARAMETER_STRUCT(FGSSplatVS, FGlobalShader);
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_SRV(StructuredBuffer<float4>, SplatBuffer)
-		SHADER_PARAMETER_SRV(Buffer<uint>, OrderBuffer)
+		SHADER_PARAMETER_SRV(StructuredBuffer<FGSSplatGPUData>, SplatBuffer)
+		SHADER_PARAMETER_SRV(Buffer<uint>,                       OrderBuffer)
 		SHADER_PARAMETER(FMatrix44f, GS_WorldToView)
 		SHADER_PARAMETER(FMatrix44f, GS_ViewToClip)
 		SHADER_PARAMETER(FMatrix44f, GS_WorldToClip)
@@ -81,8 +81,8 @@ class FGSSplatOITVS : public FGlobalShader
 	SHADER_USE_PARAMETER_STRUCT(FGSSplatOITVS, FGlobalShader);
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_SRV(StructuredBuffer<float4>, SplatBuffer)
-		SHADER_PARAMETER_SRV(Buffer<uint>, OrderBuffer)
+		SHADER_PARAMETER_SRV(StructuredBuffer<FGSSplatGPUData>, SplatBuffer)
+		SHADER_PARAMETER_SRV(Buffer<uint>,                       OrderBuffer)
 		SHADER_PARAMETER(FMatrix44f, GS_WorldToView)
 		SHADER_PARAMETER(FMatrix44f, GS_ViewToClip)
 		SHADER_PARAMETER(FMatrix44f, GS_WorldToClip)

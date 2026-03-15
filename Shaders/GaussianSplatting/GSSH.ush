@@ -10,8 +10,6 @@
 //   Degree-2 (5 × 3 = 15 floats):  [9..23]
 //   Degree-3 (7 × 3 = 21 floats):  [24..44]
 
-#pragma once
-
 // SH basis function constants
 #define SH_C0   0.28209479177387814
 #define SH_C1   0.4886025119029199

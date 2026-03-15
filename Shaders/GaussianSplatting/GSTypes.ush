@@ -1,8 +1,6 @@
 // Copyright 2024, Gaussian Splatting Plugin. All Rights Reserved.
 // GSTypes.ush  –  shared struct definitions, included by all GS shaders.
 
-#pragma once
-
 // ---------------------------------------------------------------------------
 // GPU splat data struct – must match FGSSplatData in GSTypes.h (C++)
 // Stride: 256 bytes
