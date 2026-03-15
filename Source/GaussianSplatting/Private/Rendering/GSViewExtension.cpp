@@ -143,10 +143,11 @@ FScreenPassTexture FGSViewExtension::RenderGaussianSplats_PP(
 // Helper: fill common VS parameters
 // ---------------------------------------------------------------------------
 
+template<typename TParams>
 static void FillVSParams(
 	const FSceneView& View,
 	FGSSceneProxy*    Proxy,
-	auto&             Params)
+	TParams&          Params)
 {
 	const FViewMatrices& VM = View.ViewMatrices;
 
@@ -182,24 +183,23 @@ void FGSViewExtension::RenderProxy_Sorted(
 	TShaderMapRef<FGSSplatVS> VS(View.ShaderMap);
 	TShaderMapRef<FGSSplatPS> PS(View.ShaderMap);
 
-	struct FPassParams
-	{
-		FGSSplatVS::FParameters VS;
-		FGSSplatPS::FParameters PS;
-	};
-	FPassParams* PassParams = GraphBuilder.AllocParameters<FPassParams>();
-	FillVSParams(View, Proxy, PassParams->VS);
-	PassParams->PS.RenderTargets[0] =
-		FRenderTargetBinding(SceneColorRT, ERenderTargetLoadAction::ELoad);
+	// Only PS parameters go to AllocParameters (must be a proper shader param struct).
+	// VS parameters are captured by value and bound manually inside the lambda,
+	// which is safe here because the SRVs are raw RHI resources (not RDG-managed).
+	FGSSplatPS::FParameters* PSParams = GraphBuilder.AllocParameters<FGSSplatPS::FParameters>();
+	PSParams->RenderTargets[0] = FRenderTargetBinding(SceneColorRT, ERenderTargetLoadAction::ELoad);
+
+	FGSSplatVS::FParameters VSParams = {};
+	FillVSParams(View, Proxy, VSParams);
 
 	const int32    NumInstances = Proxy->NumSplats;
 	FBufferRHIRef  LocalQuadIB  = QuadIndexBuffer;
 
 	GraphBuilder.AddPass(
 		RDG_EVENT_NAME("GaussianSplatting::Sorted (%d)", NumInstances),
-		PassParams,
+		PSParams,
 		ERDGPassFlags::Raster,
-		[VS, PS, PassParams, NumInstances, LocalQuadIB](FRHICommandList& RHICmdList)
+		[VS, PS, VSParams, NumInstances, LocalQuadIB](FRHICommandList& RHICmdList)
 		{
 			FGraphicsPipelineStateInitializer PSOInit;
 			RHICmdList.ApplyCachedRenderTargets(PSOInit);
@@ -217,14 +217,14 @@ void FGSViewExtension::RenderProxy_Sorted(
 			PSOInit.PrimitiveType = PT_TriangleList;
 
 			SetGraphicsPipelineState(RHICmdList, PSOInit, 0);
-			SetShaderParameters(RHICmdList, VS, VS.GetVertexShader(), PassParams->VS);
+			SetShaderParameters(RHICmdList, VS, VS.GetVertexShader(), VSParams);
 
 			RHICmdList.SetStreamSource(0, nullptr, 0);
 			RHICmdList.DrawIndexedPrimitive(
 				LocalQuadIB,
-				0, 0,            // BaseVertexIndex, MinIndex
-				4,               // NumVertices per quad instance
-				0, 2,            // StartIndex, NumPrimitives (2 triangles)
+				0, 0,  // BaseVertexIndex, MinIndex
+				4,     // NumVertices per quad
+				0, 2,  // StartIndex, NumPrimitives
 				NumInstances);
 		});
 }
@@ -258,15 +258,12 @@ void FGSViewExtension::RenderProxy_OIT(
 		TShaderMapRef<FGSSplatOITVS> VS(View.ShaderMap);
 		TShaderMapRef<FGSSplatOITPS> PS(View.ShaderMap);
 
-		struct FAccumParams
-		{
-			FGSSplatOITVS::FParameters VS;
-			FGSSplatOITPS::FParameters PS;
-		};
-		FAccumParams* AccumP = GraphBuilder.AllocParameters<FAccumParams>();
-		FillVSParams(View, Proxy, AccumP->VS);
-		AccumP->PS.RenderTargets[0] = FRenderTargetBinding(AccumRT, ERenderTargetLoadAction::EClear);
-		AccumP->PS.RenderTargets[1] = FRenderTargetBinding(AlphaRT, ERenderTargetLoadAction::EClear);
+		FGSSplatOITPS::FParameters* AccumP = GraphBuilder.AllocParameters<FGSSplatOITPS::FParameters>();
+		AccumP->RenderTargets[0] = FRenderTargetBinding(AccumRT, ERenderTargetLoadAction::EClear);
+		AccumP->RenderTargets[1] = FRenderTargetBinding(AlphaRT, ERenderTargetLoadAction::EClear);
+
+		FGSSplatOITVS::FParameters OITVSParams = {};
+		FillVSParams(View, Proxy, OITVSParams);
 
 		const int32   NumInstances = Proxy->NumSplats;
 		FBufferRHIRef LocalQuadIB  = QuadIndexBuffer;
@@ -274,7 +271,7 @@ void FGSViewExtension::RenderProxy_OIT(
 		GraphBuilder.AddPass(
 			RDG_EVENT_NAME("GaussianSplatting::OIT_Accum (%d)", NumInstances),
 			AccumP, ERDGPassFlags::Raster,
-			[VS, PS, AccumP, NumInstances, LocalQuadIB](FRHICommandList& RHICmdList)
+			[VS, PS, OITVSParams, NumInstances, LocalQuadIB](FRHICommandList& RHICmdList)
 			{
 				FGraphicsPipelineStateInitializer PSOInit;
 				RHICmdList.ApplyCachedRenderTargets(PSOInit);
@@ -289,7 +286,7 @@ void FGSViewExtension::RenderProxy_OIT(
 				PSOInit.BoundShaderState.PixelShaderRHI  = PS.GetPixelShader();
 				PSOInit.PrimitiveType = PT_TriangleList;
 				SetGraphicsPipelineState(RHICmdList, PSOInit, 0);
-				SetShaderParameters(RHICmdList, VS, VS.GetVertexShader(), AccumP->VS);
+				SetShaderParameters(RHICmdList, VS, VS.GetVertexShader(), OITVSParams);
 				RHICmdList.SetStreamSource(0, nullptr, 0);
 				RHICmdList.DrawIndexedPrimitive(LocalQuadIB, 0, 0, 4, 0, 2, NumInstances);
 			});
