@@ -1,0 +1,120 @@
+// Copyright 2024, Gaussian Splatting Plugin. All Rights Reserved.
+// GSTypes.ush  –  shared struct definitions, included by all GS shaders.
+
+#pragma once
+
+// ---------------------------------------------------------------------------
+// GPU splat data struct – must match FGSSplatData in GSTypes.h (C++)
+// Stride: 256 bytes
+// ---------------------------------------------------------------------------
+struct FGSSplatGPUData
+{
+	float3 Position;   // offset   0 – world-space (cm)
+	float  Opacity;    // offset  12 – pre-sigmoid opacity
+	float4 Rotation;   // offset  16 – quaternion (w, x, y, z) in UE space
+	float3 Scale;      // offset  32 – log-space scale (exp() in shader)
+	float  Pad0;       // offset  44
+	float3 SHDc;       // offset  48 – SH degree-0 RGB coefficients
+	float  Pad1;       // offset  60
+	float  SHRest[45]; // offset  64 – higher-order SH (see GSSH.ush layout)
+	float3 Pad2;       // offset 244
+	// Total: 256 bytes
+};
+
+// ---------------------------------------------------------------------------
+// Vertex-shader output / pixel-shader input
+// ---------------------------------------------------------------------------
+struct FGSSplatVSOutput
+{
+	float4 Position    : SV_POSITION;
+	float2 UV          : TEXCOORD0;  // pixel offset from Gaussian centre (screen pixels)
+	float3 Color       : TEXCOORD1;  // SH-evaluated RGB (linear)
+	float  Opacity     : TEXCOORD2;  // sigmoid(raw_opacity)
+	float3 Cov2D       : TEXCOORD3;  // packed 2D covariance (a, b, c) in pixel² units
+};
+
+// ---------------------------------------------------------------------------
+// Helper: Sigmoid
+// ---------------------------------------------------------------------------
+float GSSigmoid(float x)
+{
+	return 1.0 / (1.0 + exp(-x));
+}
+
+// ---------------------------------------------------------------------------
+// Helper: Quaternion (w, x, y, z) → 3×3 rotation matrix
+// Input quaternion must be normalised.
+// ---------------------------------------------------------------------------
+float3x3 QuatToMatrix(float4 q) // q = (w, x, y, z)
+{
+	float w = q.x, x = q.y, y = q.z, z = q.w;
+	return float3x3(
+		1 - 2*(y*y + z*z),   2*(x*y - w*z),       2*(x*z + w*y),
+		    2*(x*y + w*z),   1 - 2*(x*x + z*z),   2*(y*z - w*x),
+		    2*(x*z - w*y),       2*(y*z + w*x),   1 - 2*(x*x + y*y)
+	);
+}
+
+// ---------------------------------------------------------------------------
+// Helper: Compute 3D covariance matrix Σ = (R·S)·(R·S)^T
+//   scale_log: log-space scale (apply exp before use)
+//   rot: quaternion (w, x, y, z), must be normalised
+// ---------------------------------------------------------------------------
+float3x3 ComputeCov3D(float3 scale_log, float4 rot)
+{
+	float3 s = exp(scale_log);
+	float3x3 R = QuatToMatrix(rot);
+	// RS = R * diag(s)
+	float3x3 RS = float3x3(
+		R[0] * s.x,
+		R[1] * s.y,
+		R[2] * s.z
+	);
+	return mul(RS, transpose(RS));
+}
+
+// ---------------------------------------------------------------------------
+// Helper: Project 3D covariance to 2D screen-space covariance.
+//   posView  : position in view/camera space
+//   sigma3D  : 3D covariance (world-space)
+//   viewMat  : upper-left 3×3 of world-to-view matrix (rotation part)
+//   fx, fy   : focal lengths in pixels
+// Returns packed (a, b, c) of 2×2 symmetric covariance matrix:
+//     Σ2D = [[a, b], [b, c]]
+// ---------------------------------------------------------------------------
+float3 ProjectCov3D(float3 posView, float3x3 sigma3D, float3x3 viewMat, float fx, float fy)
+{
+	float z  = posView.z;
+	float z2 = z * z;
+
+	// Jacobian of the perspective projection at posView
+	float3x3 J = float3x3(
+		fx / z,       0.0,    -fx * posView.x / z2,
+		    0.0,   fy / z,    -fy * posView.y / z2,
+		    0.0,       0.0,    0.0
+	);
+
+	float3x3 T = mul(J, viewMat);
+
+	float3x3 Sigma2D_full = mul(mul(T, sigma3D), transpose(T));
+
+	// Add small regularisation for anti-aliasing (prevents infinitely thin splats)
+	return float3(
+		Sigma2D_full[0][0] + 0.3,
+		Sigma2D_full[0][1],
+		Sigma2D_full[1][1] + 0.3
+	);
+}
+
+// ---------------------------------------------------------------------------
+// Helper: Compute bounding radius (3σ) from packed 2D covariance.
+// Returns the radius in screen pixels.
+// ---------------------------------------------------------------------------
+float ComputeSplatRadius(float3 cov2D)
+{
+	float a = cov2D.x, b = cov2D.y, c = cov2D.z;
+	float mid  = 0.5 * (a + c);
+	float disc = sqrt(max(0.0, mid * mid - (a * c - b * b)));
+	float lambda1 = mid + disc;
+	return ceil(3.0 * sqrt(max(0.0, lambda1)));
+}

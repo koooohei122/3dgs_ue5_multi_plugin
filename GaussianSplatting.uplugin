@@ -1,0 +1,30 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0.0",
+	"FriendlyName": "Gaussian Splatting",
+	"Description": "High-performance 3D Gaussian Splatting renderer for UE5.6. Supports PLY (standard/PostShot/PlayCanvas), SPZ, SOG/SOGS formats. Mobile-GS depth-aware OIT rendering for mobile platforms.",
+	"Category": "Rendering",
+	"CreatedBy": "",
+	"CreatedByURL": "",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"EngineVersion": "5.6.0",
+	"CanContainContent": true,
+	"IsBetaVersion": true,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "GaussianSplatting",
+			"Type": "Runtime",
+			"LoadingPhase": "PostConfigInit"
+		},
+		{
+			"Name": "GaussianSplattingEditor",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		}
+	]
+}

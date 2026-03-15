@@ -1,0 +1,39 @@
+// Copyright 2024, Gaussian Splatting Plugin. All Rights Reserved.
+// GSSplatOIT.usf  –  OIT resolve pass.
+//
+// After all Gaussians are rendered in GS_OIT_MODE, this full-screen pass
+// resolves the two OIT accumulation buffers into the scene colour buffer.
+//
+// Algorithm (Depth-Aware Weighted OIT, inspired by Mobile-GS):
+//   FinalColour = AccumColour / max(AccumWeight, 1e-5)
+//   FinalAlpha  = 1 - exp(-AccumAlpha)
+
+Texture2D<float4> GS_AccumTexture;   // RT0: accumulated weighted colour+weight
+Texture2D<float>  GS_AlphaTexture;   // RT1: accumulated alpha
+SamplerState      GS_LinearSampler;
+
+void OITResolveVS(
+	uint VertexId : SV_VertexID,
+	out float4 OutPosition : SV_POSITION,
+	out float2 OutUV       : TEXCOORD0)
+{
+	// Full-screen triangle (no vertex buffer needed)
+	float2 UV = float2((VertexId << 1) & 2, VertexId & 2);
+	OutUV      = UV;
+	OutPosition = float4(UV * float2(2, -2) + float2(-1, 1), 0, 1);
+}
+
+float4 OITResolvePS(
+	float4 SvPosition : SV_POSITION,
+	float2 UV         : TEXCOORD0) : SV_Target
+{
+	float4 Accum = GS_AccumTexture.Sample(GS_LinearSampler, UV);
+	float  Alpha = GS_AlphaTexture.Sample(GS_LinearSampler, UV);
+
+	float Weight = max(Accum.a, 1e-5);
+	float3 Color = Accum.rgb / Weight;
+	float  FinalAlpha = clamp(1.0 - exp(-Alpha), 0.0, 1.0);
+
+	// Premultiplied alpha output
+	return float4(Color * FinalAlpha, FinalAlpha);
+}

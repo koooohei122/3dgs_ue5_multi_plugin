@@ -1,0 +1,216 @@
+// Copyright 2024, Gaussian Splatting Plugin. All Rights Reserved.
+// GSSplat.usf  –  Main Gaussian Splatting render shader.
+//
+// Rendering strategy:
+//   Each Gaussian is rendered as a camera-facing quad (4 vertices, 2 triangles).
+//   The vertex shader projects the Gaussian centre to screen, computes the
+//   2D covariance ellipse, and positions each quad corner using the 3σ bounding
+//   radius. The pixel shader evaluates the Gaussian contribution at each fragment
+//   and outputs premultiplied-alpha colour for alpha blending.
+//
+//   Two modes are supported, selected by the GS_OIT_MODE compile definition:
+//     GS_OIT_MODE 0  –  Standard alpha-over blending (splats must be back-to-front sorted).
+//     GS_OIT_MODE 1  –  Mobile-GS Depth-Aware OIT (no per-frame sort required).
+//
+// Quad vertex layout (SV_VertexID 0..3 per Gaussian instance):
+//   0 = top-left, 1 = top-right, 2 = bottom-left, 3 = bottom-right
+
+#include "/Plugin/GaussianSplatting/GSTypes.ush"
+#include "/Plugin/GaussianSplatting/GSSH.ush"
+
+// ---------------------------------------------------------------------------
+// Shader Parameters
+// ---------------------------------------------------------------------------
+
+// Structured buffer containing one FGSSplatGPUData per splat (256-byte stride)
+StructuredBuffer<FGSSplatGPUData> SplatBuffer;
+
+// Index buffer: SplatIndex = OrderBuffer[InstanceId].
+// In sorted mode this is the depth-sorted order (back-to-front).
+// In OIT mode this is identity (0,1,2,...,N-1).
+Buffer<uint> OrderBuffer;
+
+// Camera / view uniforms
+float4x4  GS_WorldToView;       // world-space → view/camera space
+float4x4  GS_ViewToClip;        // view space → clip space (projection)
+float4x4  GS_WorldToClip;       // combined for clip-space position
+float3    GS_CameraWorldPos;    // camera origin in world space (cm)
+float2    GS_ViewportSize;      // viewport (width, height) in pixels
+float2    GS_FocalLength;       // (fx, fy) in pixels
+int       GS_SHDegree;          // 0..3  – number of SH degrees to evaluate
+
+// OIT: scene depth texture for depth-aware weighting
+#if GS_OIT_MODE
+Texture2D<float> GS_SceneDepth;
+SamplerState     GS_SceneDepthSampler;
+float            GS_NearPlane;
+float            GS_FarPlane;
+#endif
+
+// ---------------------------------------------------------------------------
+// Vertex Shader
+// ---------------------------------------------------------------------------
+
+FGSSplatVSOutput MainVS(uint VertexId : SV_VertexID, uint InstanceId : SV_InstanceID)
+{
+	FGSSplatVSOutput Output = (FGSSplatVSOutput)0;
+
+	// Resolve actual splat index (sorted or identity)
+	uint SplatIdx = OrderBuffer[InstanceId];
+	FGSSplatGPUData Splat = SplatBuffer[SplatIdx];
+
+	// --- Transform position to view space ---
+	float4 WorldPos4 = float4(Splat.Position, 1.0);
+	float3 ViewPos   = mul(GS_WorldToView, WorldPos4).xyz;
+
+	// Cull splats behind near plane
+	if (ViewPos.z <= 0.01)
+	{
+		Output.Position = float4(0, 0, -1, 1); // degenerate – behind camera
+		return Output;
+	}
+
+	// --- Compute 3D covariance ---
+	float3x3 Cov3D = ComputeCov3D(Splat.Scale, Splat.Rotation);
+
+	// --- Project to 2D covariance ---
+	// Extract the upper-left 3×3 of WorldToView (rotation+scale, no translation)
+	float3x3 ViewRot = float3x3(
+		GS_WorldToView[0].xyz,
+		GS_WorldToView[1].xyz,
+		GS_WorldToView[2].xyz
+	);
+	float3 Cov2D = ProjectCov3D(ViewPos, Cov3D, ViewRot, GS_FocalLength.x, GS_FocalLength.y);
+
+	// --- Compute bounding radius ---
+	float Radius = ComputeSplatRadius(Cov2D);
+	Radius = clamp(Radius, 1.0, 2048.0); // safety clamp
+
+	// --- Quad corner offset (pixels) ---
+	// VertexId: 0=(-1,-1) 1=(1,-1) 2=(-1,1) 3=(1,1)
+	float2 Corner = float2(
+		(VertexId & 1) ? 1.0 : -1.0,
+		(VertexId & 2) ? 1.0 : -1.0
+	);
+	float2 PixelOffset = Corner * Radius;
+
+	// --- Compute clip-space position of the Gaussian centre ---
+	float4 ClipCentre = mul(GS_WorldToClip, WorldPos4);
+	float2 NDCCentre  = ClipCentre.xy / ClipCentre.w;
+
+	// --- Convert pixel offset to NDC ---
+	// NDC goes from -1 to 1 across the viewport (width, height)
+	float2 NDCOffset = PixelOffset / GS_ViewportSize * 2.0;
+	float2 NDCCorner = NDCCentre + NDCOffset;
+
+	// --- Output clip-space position ---
+	// Preserve original w for perspective-correct interpolation
+	Output.Position = float4(NDCCorner * ClipCentre.w, ClipCentre.z, ClipCentre.w);
+
+	// --- Pass pixel offset as UV for Gaussian evaluation in PS ---
+	Output.UV = PixelOffset;
+
+	// --- Pass packed 2D covariance ---
+	Output.Cov2D = Cov2D;
+
+	// --- Evaluate spherical harmonics for view-dependent colour ---
+	float3 ViewDir = normalize(Splat.Position - GS_CameraWorldPos);
+	float shRest[45];
+	for (int r = 0; r < 45; r++) shRest[r] = Splat.SHRest[r];
+	Output.Color = EvaluateSH(Splat.SHDc, shRest, ViewDir, GS_SHDegree);
+
+	// --- Sigmoid opacity ---
+	Output.Opacity = GSSigmoid(Splat.Opacity);
+
+	return Output;
+}
+
+// ---------------------------------------------------------------------------
+// Pixel Shader  –  Standard alpha-over mode
+// ---------------------------------------------------------------------------
+
+#if !GS_OIT_MODE
+
+float4 MainPS(FGSSplatVSOutput Input) : SV_Target
+{
+	// Inverse of 2D covariance: [[c,-b],[-b,a]] / det
+	float a = Input.Cov2D.x;
+	float b = Input.Cov2D.y;
+	float c = Input.Cov2D.z;
+	float det = a * c - b * b;
+	if (det < 1e-6) discard;
+
+	float inv_a = c / det;
+	float inv_b = -b / det;
+	float inv_c = a / det;
+
+	// Mahalanobis distance squared (quadratic form)
+	float2 d = Input.UV; // pixel offset from centre
+	float power = -0.5 * (inv_a * d.x * d.x + 2.0 * inv_b * d.x * d.y + inv_c * d.y * d.y);
+
+	if (power > 0.0) discard;
+
+	float gaussian = exp(power);
+	float alpha    = min(0.99, Input.Opacity * gaussian);
+
+	if (alpha < 1.0 / 255.0) discard;
+
+	// Premultiplied alpha for alpha-over blending:
+	//   SrcBlend=One, DstBlend=InvSrcAlpha
+	float3 premultColor = Input.Color * alpha;
+	return float4(premultColor, alpha);
+}
+
+#endif // !GS_OIT_MODE
+
+// ---------------------------------------------------------------------------
+// Pixel Shader  –  Mobile-GS Depth-Aware OIT mode
+// ---------------------------------------------------------------------------
+
+#if GS_OIT_MODE
+
+// Two render targets:
+//   RT0 = accumulated weighted colour (RGB) + transmittance weight (A)
+//   RT1 = accumulated alpha
+
+struct FGSOITOutput
+{
+	float4 Accumulation : SV_Target0; // weighted colour + weight
+	float  Alpha        : SV_Target1; // accumulated alpha
+};
+
+FGSOITOutput MainPS_OIT(FGSSplatVSOutput Input)
+{
+	FGSOITOutput Out = (FGSOITOutput)0;
+
+	float a = Input.Cov2D.x;
+	float b = Input.Cov2D.y;
+	float c = Input.Cov2D.z;
+	float det = a * c - b * b;
+	if (det < 1e-6) discard;
+
+	float inv_a = c / det;
+	float inv_b = -b / det;
+	float inv_c = a / det;
+
+	float2 d     = Input.UV;
+	float power  = -0.5 * (inv_a * d.x * d.x + 2.0 * inv_b * d.x * d.y + inv_c * d.y * d.y);
+	if (power > 0.0) discard;
+
+	float gaussian = exp(power);
+	float alpha    = min(0.99, Input.Opacity * gaussian);
+	if (alpha < 1.0 / 255.0) discard;
+
+	// Depth-aware weight: w(z, alpha) = alpha / (z^4 + 1e-5)
+	// (from Mobile-GS: penalise contributions at far depths to approximate ordering)
+	float depth   = Input.Position.w; // linear view-space depth (cm)
+	float depth_n = depth / 100000.0; // normalise to ~1 at 1 km
+	float weight  = alpha / (depth_n * depth_n * depth_n * depth_n + 1e-5);
+
+	Out.Accumulation = float4(Input.Color * alpha * weight, weight);
+	Out.Alpha        = alpha;
+
+	return Out;
+}
+
+#endif // GS_OIT_MODE

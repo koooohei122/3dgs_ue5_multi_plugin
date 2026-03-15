@@ -1,0 +1,86 @@
+// Copyright 2024, Gaussian Splatting Plugin. All Rights Reserved.
+// GSSH.ush  –  Spherical Harmonics evaluation up to degree 3.
+//
+// SH coefficient layout in SHRest[] (3DGS convention):
+//   Coefficients are stored interleaved by RGB channel.
+//   Degree-1 (3 basis functions × 3 channels = 9 floats):
+//     [0]=R·Y_1^{-1}, [1]=G·Y_1^{-1}, [2]=B·Y_1^{-1},
+//     [3]=R·Y_1^0,    [4]=G·Y_1^0,    [5]=B·Y_1^0,
+//     [6]=R·Y_1^1,    [7]=G·Y_1^1,    [8]=B·Y_1^1
+//   Degree-2 (5 × 3 = 15 floats):  [9..23]
+//   Degree-3 (7 × 3 = 21 floats):  [24..44]
+
+#pragma once
+
+// SH basis function constants
+#define SH_C0   0.28209479177387814
+#define SH_C1   0.4886025119029199
+#define SH_C2_0 1.0925484305920792
+#define SH_C2_1 -1.0925484305920792
+#define SH_C2_2 0.31539156525252005
+#define SH_C2_3 -1.0925484305920792
+#define SH_C2_4 0.5462742152960396
+#define SH_C3_0 -0.5900435899266435
+#define SH_C3_1  2.890611442640554
+#define SH_C3_2 -0.4570457994644658
+#define SH_C3_3  0.3731763325901154
+#define SH_C3_4 -0.4570457994644658
+#define SH_C3_5  1.445305721320277
+#define SH_C3_6 -0.5900435899266435
+
+/**
+ * Evaluate spherical harmonics up to 'degree' for view direction 'dir'.
+ * dir must be a unit vector in world space.
+ * Returns linear RGB colour (may need clamp to [0,1]).
+ * The +0.5 offset matches the 3DGS convention (DC term is centred at 0.5).
+ */
+float3 EvaluateSH(float3 dc, float shRest[45], float3 dir, int degree)
+{
+	// Degree 0 (view-independent base colour)
+	float3 result = SH_C0 * dc;
+
+	if (degree < 1)
+	{
+		return result + 0.5;
+	}
+
+	// Degree 1
+	float x = dir.x, y = dir.y, z = dir.z;
+	result += SH_C1 * (
+		-y * float3(shRest[0],  shRest[1],  shRest[2])
+		+z * float3(shRest[3],  shRest[4],  shRest[5])
+		-x * float3(shRest[6],  shRest[7],  shRest[8])
+	);
+
+	if (degree < 2)
+	{
+		return result + 0.5;
+	}
+
+	// Degree 2
+	float xx = x*x, yy = y*y, zz = z*z;
+	float xy = x*y, yz = y*z, xz = x*z;
+	result +=
+		SH_C2_0 * xy          * float3(shRest[9],  shRest[10], shRest[11]) +
+		SH_C2_1 * yz          * float3(shRest[12], shRest[13], shRest[14]) +
+		SH_C2_2 * (2*zz-xx-yy)* float3(shRest[15], shRest[16], shRest[17]) +
+		SH_C2_3 * xz          * float3(shRest[18], shRest[19], shRest[20]) +
+		SH_C2_4 * (xx-yy)     * float3(shRest[21], shRest[22], shRest[23]);
+
+	if (degree < 3)
+	{
+		return result + 0.5;
+	}
+
+	// Degree 3
+	result +=
+		SH_C3_0 * y*(3*xx-yy)  * float3(shRest[24], shRest[25], shRest[26]) +
+		SH_C3_1 * xy*z          * float3(shRest[27], shRest[28], shRest[29]) +
+		SH_C3_2 * y*(4*zz-xx-yy)* float3(shRest[30], shRest[31], shRest[32]) +
+		SH_C3_3 * z*(2*zz-3*xx-3*yy)* float3(shRest[33], shRest[34], shRest[35]) +
+		SH_C3_4 * x*(4*zz-xx-yy)* float3(shRest[36], shRest[37], shRest[38]) +
+		SH_C3_5 * z*(xx-yy)    * float3(shRest[39], shRest[40], shRest[41]) +
+		SH_C3_6 * x*(xx-3*yy)  * float3(shRest[42], shRest[43], shRest[44]);
+
+	return result + 0.5;
+}
