@@ -38,7 +38,6 @@ FGSSceneProxy::FGSSceneProxy(UGSRenderComponent* InComponent)
 	const FGSSplatData* SplatPtr = Asset->GetSplatData();
 	if (!SplatPtr)
 	{
-		Asset->BulkSplatData.Unlock();
 		return;
 	}
 
@@ -89,7 +88,7 @@ void FGSSceneProxy::InitGPUResources(const TArray<FGSSplatData>& Splats)
 	SplatBuffer = RHICreateStructuredBuffer(
 		sizeof(FGSSplatData),
 		BufferSize,
-		BUF_ShaderResource | BUF_Static,
+		BUF_ShaderResource,
 		ERHIAccess::SRVMask,
 		CreateInfo);
 

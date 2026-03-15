@@ -151,9 +151,12 @@ static void FillVSParams(
 {
 	const FViewMatrices& VM = View.ViewMatrices;
 
-	Params.GS_WorldToView    = FMatrix44f(VM.GetViewMatrix());
-	Params.GS_ViewToClip     = FMatrix44f(VM.GetProjectionMatrix());
-	Params.GS_WorldToClip    = FMatrix44f(VM.GetViewProjectionMatrix());
+	// UE5 uses row-vector convention (mul(v, M)), but our shaders use column-vector
+	// convention (mul(M, v)) matching the 3DGS paper. Transpose here so the shader
+	// math is correct without any changes to the HLSL.
+	Params.GS_WorldToView    = FMatrix44f(VM.GetViewMatrix().GetTransposed());
+	Params.GS_ViewToClip     = FMatrix44f(VM.GetProjectionMatrix().GetTransposed());
+	Params.GS_WorldToClip    = FMatrix44f(VM.GetViewProjectionMatrix().GetTransposed());
 	Params.GS_CameraWorldPos = FVector3f(VM.GetViewOrigin());
 
 	const FIntRect ViewRect  = View.UnscaledViewRect;
